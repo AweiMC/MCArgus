@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * 组装并运行最终启动命令。
@@ -26,6 +27,8 @@ import java.util.concurrent.TimeUnit;
  * 会直接到达服务端进程；MCArgus 自身收到 SIGTERM 时通过 shutdown hook 向服务端转发停止信号。
  */
 public final class ServerLauncher {
+
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     public static final class Plan {
         public final List<String> command;
@@ -205,7 +208,7 @@ public final class ServerLauncher {
         if (s == null) {
             return out;
         }
-        for (String t : s.trim().split("\\s+")) {
+        for (String t : WHITESPACE.split(s.trim())) {
             if (!t.isEmpty()) {
                 out.add(t);
             }

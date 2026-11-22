@@ -7,6 +7,7 @@ import com.mcargus.util.Log;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Locale;
 
 /**
  * 解析用于启动服务端的 Java 可执行文件。
@@ -64,6 +65,6 @@ public final class JvmLocator {
     }
 
     private static String javaBin() {
-        return System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java";
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win") ? "java.exe" : "java";
     }
 }

@@ -2,14 +2,13 @@ package com.mcargus.mods;
 
 import com.mcargus.i18n.Messages;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * mods 目录文件名清理：去除下载站/汉化组添加的前缀装饰，例如
@@ -51,13 +50,15 @@ public final class ModSanitizer {
                 return r;
             }
             List<Path> jars = new ArrayList<>();
-            File[] files = mods.toFile().listFiles();
-            if (files == null) {
-                return r;
-            }
-            for (File f : files) {
-                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".jar")) {
-                    jars.add(f.toPath());
+            try (DirectoryStream<Path> ds = Files.newDirectoryStream(mods)) {
+                for (Path p : ds) {
+                    if (!isJarName(p.getFileName().toString())) {
+                        continue;
+                    }
+                    // 只接受常规文件（目录、符号链接等直接跳过）
+                    if (Files.readAttributes(p, BasicFileAttributes.class).isRegularFile()) {
+                        jars.add(p);
+                    }
                 }
             }
             jars.sort((a, b) -> a.getFileName().toString().compareToIgnoreCase(b.getFileName().toString()));
@@ -134,8 +135,7 @@ public final class ModSanitizer {
             if (end < 0) {
                 break; // 没有配对的闭合括号
             }
-            String rest = s.substring(end + 1);
-            rest = rest.replaceFirst("^[\\s\\-_\\u3000]+", "");
+            String rest = trimLeadingSeparators(s.substring(end + 1));
             if (!rest.isEmpty()) {
                 s = rest;
                 changed = true;
@@ -157,7 +157,25 @@ public final class ModSanitizer {
         return s.substring(start, end);
     }
 
+    /** 去掉前缀括号后的空白与连接符，等价于原来的 ^[\\s\\-_\\u3000]+ 正则，但不重复编译正则。 */
+    private static String trimLeadingSeparators(String s) {
+        int i = 0;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (c != '-' && c != '_' && !isSpace(c)) {
+                break;
+            }
+            i++;
+        }
+        return i == 0 ? s : s.substring(i);
+    }
+
     private static boolean isSpace(char c) {
-        return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\u3000';
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n'
+                || c == '\u000B' || c == '\f' || c == '\u3000';
+    }
+
+    private static boolean isJarName(String name) {
+        return name.length() >= 4 && name.regionMatches(true, name.length() - 4, ".jar", 0, 4);
     }
 }

@@ -4,15 +4,15 @@ import com.mcargus.Config;
 import com.mcargus.i18n.Messages;
 import com.mcargus.util.Log;
 
-import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * mods 目录扫描调度（scanCompleted 状态机）。
@@ -28,6 +28,8 @@ import java.util.Locale;
  * 极端情况检测不到。指纹只统计顶层 .jar，mods 里的其他文件变化不会触发重扫（清理器只管 .jar）。
  */
 public final class ScanManager {
+
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     public static final class Result {
         public final boolean ranFullScan;
@@ -121,29 +123,41 @@ public final class ScanManager {
             if (!Files.isDirectory(modsDir)) {
                 return null;
             }
-            File[] files = modsDir.toFile().listFiles();
-            if (files == null) {
-                return null;
-            }
             List<String> lines = new ArrayList<String>();
-            for (File f : files) {
-                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".jar")) {
-                    lines.add(f.getName() + ":" + f.length());
+            try (DirectoryStream<Path> ds = Files.newDirectoryStream(modsDir)) {
+                for (Path p : ds) {
+                    String name = p.getFileName().toString();
+                    if (!isJarName(name)) {
+                        continue;
+                    }
+                    // 一次 readAttributes 同时拿到“是否常规文件 + 大小”，避免 isFile()+length() 两次 stat
+                    BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class);
+                    if (attrs.isRegularFile()) {
+                        lines.add(name + ":" + attrs.size());
+                    }
                 }
             }
             Collections.sort(lines);
             MessageDigest md = MessageDigest.getInstance("SHA-256");
+            StringBuilder input = new StringBuilder(lines.size() * 32);
             for (String s : lines) {
-                md.update((s + "\n").getBytes(StandardCharsets.UTF_8));
+                input.append(s).append('\n');
             }
+            md.update(input.toString().getBytes(StandardCharsets.UTF_8));
             byte[] d = md.digest();
-            StringBuilder sb = new StringBuilder();
+            StringBuilder hex = new StringBuilder(16);
             for (int i = 0; i < 8; i++) {
-                sb.append(String.format("%02x", d[i] & 0xff));
+                int b = d[i] & 0xff;
+                hex.append(HEX[b >>> 4]).append(HEX[b & 0x0f]);
             }
-            return sb.toString();
+            return hex.toString();
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** 不分配小写字符串的 .jar 后缀判断（大小写不敏感）。 */
+    private static boolean isJarName(String name) {
+        return name.length() >= 4 && name.regionMatches(true, name.length() - 4, ".jar", 0, 4);
     }
 }

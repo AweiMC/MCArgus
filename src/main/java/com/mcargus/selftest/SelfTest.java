@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -420,7 +421,7 @@ public final class SelfTest {
                 : System.getProperty("java.class.path");
         String javaBin = System.getProperty("java.home") + java.io.File.separator
                 + "bin" + java.io.File.separator
-                + (System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java");
+                + (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win") ? "java.exe" : "java");
         java.io.File sink = java.io.File.createTempFile("mcargus-selftest-sink", ".log");
         sink.deleteOnExit();
         Process p = new ProcessBuilder(javaBin, "-cp", cp, "com.mcargus.selftest.SleepChild")

@@ -18,6 +18,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -219,7 +220,7 @@ public final class Main {
             if (a == null) {
                 continue;
             }
-            String low = a.toLowerCase();
+            String low = a.toLowerCase(Locale.ROOT);
             boolean keepD = low.startsWith("-d") && !low.startsWith("-dmcargus");
             boolean keep = low.startsWith("-xmx") || low.startsWith("-xms") || low.startsWith("-xss")
                     || low.startsWith("-xmn") || low.startsWith("-xx:") || a.equals("-server") || keepD;
@@ -242,7 +243,7 @@ public final class Main {
     }
 
     public static boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase().contains("win");
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
     private static String join(List<String> l) {

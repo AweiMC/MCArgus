@@ -147,7 +147,7 @@ public final class Discovery {
             if (versionDir == null || familyDir == null) {
                 return null;
             }
-            if (cached.version == null || !versionDir.getFileName().toString().matches(".*\\d.*")) {
+            if (cached.version == null || !containsDigit(versionDir.getFileName().toString())) {
                 return null;
             }
             List<ArgsCandidate> cands = new ArrayList<>();
@@ -155,11 +155,11 @@ public final class Discovery {
             if (subs == null) {
                 return null;
             }
+            String[] names = isWindows ? new String[]{WIN_ARGS, UNIX_ARGS} : new String[]{UNIX_ARGS, WIN_ARGS};
             for (File sub : subs) {
                 if (!sub.isDirectory()) {
                     continue;
                 }
-                String[] names = isWindows ? new String[]{WIN_ARGS, UNIX_ARGS} : new String[]{UNIX_ARGS, WIN_ARGS};
                 for (String name : names) {
                     Path f2 = sub.toPath().resolve(name);
                     if (Files.isRegularFile(f2)) {
@@ -437,6 +437,15 @@ public final class Discovery {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    private static boolean containsDigit(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (Character.isDigit(s.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static long parseLong(String s) {

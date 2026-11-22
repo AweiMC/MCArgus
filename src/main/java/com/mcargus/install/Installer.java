@@ -5,6 +5,8 @@ import com.mcargus.Errors;
 import com.mcargus.i18n.Messages;
 import com.mcargus.util.Log;
 
+import org.apache.commons.compress.archivers.ArchiveEntry;
+import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
@@ -21,14 +23,15 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 服务端压缩包自动安装：目录内没有任何启动目标时，识别 zip/tar.gz/tgz/tar 压缩包，
@@ -230,49 +233,50 @@ public final class Installer {
         if (names == null) {
             return 0;
         }
+        // 每个条目只取一次“根层名 / 末段名”，避免对每个标记重复 toLowerCase 与全表扫描。
+        Set<String> parts = new HashSet<String>(names.size() * 2);
+        for (String n : names) {
+            parts.add(n);
+            int first = n.indexOf('/');
+            if (first >= 0) {
+                parts.add(n.substring(0, first));
+                int last = n.lastIndexOf('/');
+                if (last + 1 < n.length()) {
+                    parts.add(n.substring(last + 1));
+                }
+            }
+        }
         int score = 0;
         for (String m : STRONG_MARKERS) {
-            if (containsMarker(names, m)) {
+            if (parts.contains(m)) {
                 score += 5;
             }
         }
         for (String m : WEAK_MARKERS) {
-            if (containsMarker(names, m)) {
+            if (parts.contains(m)) {
                 score += 1;
             }
         }
         return score;
     }
 
-    private static boolean containsMarker(List<String> names, String marker) {
-        for (String n : names) {
-            String low = n.toLowerCase(Locale.ROOT);
-            if (low.equals(marker) || low.endsWith("/" + marker) || low.startsWith(marker + "/")
-                    || low.endsWith("\\" + marker)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static List<String> listEntryNames(Path archive, int cap, String zipEncoding) {
         String n = archive.getFileName().toString().toLowerCase(Locale.ROOT);
-        try {
+        try (InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16)) {
             List<String> out = new ArrayList<String>();
-            InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16);
-            InputStream wrapped;
+            ArchiveInputStream<? extends ArchiveEntry> tin;
             if (n.endsWith(".zip")) {
                 // 流式读取：不解析 central directory，规避 JDK 对中文打包软件 zip 的严格校验失败
-                wrapped = newZipStream(raw, zipEncoding);
+                tin = newZipStream(raw, zipEncoding);
             } else {
-                wrapped = n.endsWith(".tar") ? raw : new GzipCompressorInputStream(raw);
+                InputStream wrapped = n.endsWith(".tar") ? raw : new GzipCompressorInputStream(raw);
+                tin = new TarArchiveInputStream(wrapped);
             }
-            org.apache.commons.compress.archivers.ArchiveInputStream tin =
-                    (org.apache.commons.compress.archivers.ArchiveInputStream) wrapped;
             try {
-                org.apache.commons.compress.archivers.ArchiveEntry e;
+                ArchiveEntry e;
                 while ((e = tin.getNextEntry()) != null && out.size() < cap) {
-                    out.add(e.getName());
+                    // 后续只做标记匹配：统一小写并把反斜杠规范成 '/'
+                    out.add(e.getName().toLowerCase(Locale.ROOT).replace('\\', '/'));
                 }
             } finally {
                 tin.close();
@@ -321,7 +325,7 @@ public final class Installer {
             int files = 0;
             byte[] buf = new byte[65536];
             ZipArchiveEntry e;
-            while ((e = zin.getNextZipEntry()) != null) {
+            while ((e = zin.getNextEntry()) != null) {
                 if (e.isDirectory()) {
                     continue;
                 }
@@ -358,7 +362,7 @@ public final class Installer {
             int files = 0;
             byte[] buf = new byte[65536];
             TarArchiveEntry e;
-            while ((e = tin.getNextTarEntry()) != null) {
+            while ((e = tin.getNextEntry()) != null) {
                 if (e.isDirectory() || e.isSymbolicLink() || e.isLink()) {
                     if (e.isSymbolicLink() || e.isLink()) {
                         Log.warn(Messages.get("install.linkEntry", e.getName()));
@@ -455,11 +459,6 @@ public final class Installer {
                     counts[2]++;
                     return FileVisitResult.CONTINUE;
                 }
-                if (Files.exists(dest)) {
-                    counts[1]++;
-                    Log.warn(Messages.get("install.skipExisting", rel));
-                    return FileVisitResult.CONTINUE;
-                }
                 try {
                     if (dest.getParent() != null) {
                         Files.createDirectories(dest.getParent());
@@ -467,8 +466,14 @@ public final class Installer {
                     Files.move(file, dest);
                     counts[0]++;
                 } catch (IOException e) {
-                    counts[2]++;
-                    Log.warn(Messages.get("install.moveFailed", rel, e.getMessage()));
+                    // 不先做 Files.exists 预检：让 move 直接判断，少一次 stat，也避免 TOCTOU。
+                    if (Files.exists(dest)) {
+                        counts[1]++;
+                        Log.warn(Messages.get("install.skipExisting", rel));
+                    } else {
+                        counts[2]++;
+                        Log.warn(Messages.get("install.moveFailed", rel, e.getMessage()));
+                    }
                 }
                 return FileVisitResult.CONTINUE;
             }

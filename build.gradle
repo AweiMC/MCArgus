@@ -21,6 +21,8 @@ dependencies {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 8
+    // 保持构建输出干净：废弃 API / 未检查类型在编译期直接暴露
+    options.compilerArgs += ['-Xlint:deprecation', '-Xlint:unchecked']
 }
 
 application {
