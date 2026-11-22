@@ -34,6 +34,9 @@ Built for panels such as Pterodactyl, but works anywhere Java runs.
   - `--dry-run` prints the exact command without launching.
   - Exit codes: `0` OK, `2` usage error, `3` preflight failure, otherwise the server's own code.
   - Console + rotating log file (`mcargus/logs/mcargus.log`, daily, kept 14 days).
+- **Panel console channels**
+  - Shell prefix (default `!`) runs commands in the server directory; control prefix (default `@`) runs MCArgus actions such as restart, download, and Forge/NeoForge install.
+  - No extra port; everything goes through the panel's existing console. Unprefixed lines go straight to Minecraft.
 - **Localization**
   - Simplified Chinese by default, English available.
   - Switch with `locale=en_us` in the config file (see below).
@@ -116,6 +119,10 @@ Common keys:
 | `program.args` | `nogui` | Arguments passed to the server |
 | `mods.sanitize` | `true` | Clean download-site prefixes in `mods/` filenames before launch |
 | `ysm.compat` | `true` | Enable the YSM GLIBC_2.18 compat layer when needed (Linux x86_64, glibc < 2.18, YSM in `mods/`) |
+| `console.shell` | `true` | Take over the panel console: lines starting with the shell prefix run in the server directory |
+| `console.shell.prefix` | `!` | Shell command prefix; change it (e.g. `>>`) if a mod already uses `!` |
+| `console.admin` | `true` | Enable MCArgus control commands (`@restart`, `@download`, `@installforge`, ...) |
+| `console.admin.prefix` | `@` | MCArgus control command prefix |
 | `install.enabled` | `true` | Auto-install from a server archive when no launch target exists |
 | `install.zipEncoding` | `GBK` | Encoding for non-UTF-8 zip entry names (Chinese packaging tools) |
 
@@ -133,6 +140,60 @@ Common keys:
 3. Restart MCArgus. `--help`, logs, diagnostics, and errors are now in English.
 
 Set `locale=zh_cn` (or remove the key) to return to Simplified Chinese.
+
+### Console channels
+
+Pterodactyl-style panels can only write text into the process stdin. MCArgus takes over stdin and provides two independent command channels; **lines without a prefix go straight to Minecraft**, so `stop`, `list`, and mod commands keep working.
+
+**Shell channel** — prefix `!` by default (`console.shell.prefix`):
+
+```text
+!ls -la                   list files
+!ps aux                   show processes
+!df -h                    show disk usage
+!free -m                  show memory
+!cat logs/latest.log      read a log
+!cd mods                  change directory (affects later commands)
+!pwd                      print working directory
+!wget -O mods/x.jar URL   download a file
+!unzip x.zip              extract an archive
+!help                     show help
+```
+
+A prefixed line is executed with `/bin/sh -c` in the server directory; output is streamed back to the panel console.
+
+**MCArgus control channel** — prefix `@` by default (`console.admin.prefix`):
+
+```text
+@help                                  show control commands
+@status                                version, directory, Java, uptime, prefixes
+@restart                               stop the server and start it again under MCArgus
+@stop                                  stop the server and exit MCArgus
+@download <url> [path]                 download a file into the server directory
+@installforge <installer.jar|url>      run a Forge installer with --installServer
+@installneoforge <installer.jar|url>   run a NeoForge installer with --installServer
+@menu                                  numeric control menu (TUI)
+```
+
+Examples:
+
+```text
+@download https://example.com/mods/foo.jar mods/foo.jar
+@installforge forge-1.20.1-47.4.29-installer.jar
+@installforge https://example.com/forge-installer.jar
+@installneoforge neoforge-21.1.80-installer.jar
+```
+
+`@installforge` / `@installneoforge` download the installer when given a URL, then run it in the server directory. After a successful install, use `@restart` to discover the new launch target. Version lookup/selection is not automated yet: download or upload the installer for the version you want.
+
+`@restart` restarts the Minecraft server under the same MCArgus process and re-discovers the launch target, so it works after installing Forge/NeoForge. Changes to `mcargus.properties` (including the two prefixes) require a full MCArgus/container restart.
+
+- **No port is opened**: everything goes through the panel's existing WebSocket console, so a single Minecraft port is enough;
+- Shell commands run as the container user, i.e. full control of the server — keep your panel account safe;
+- Shell output is capped at 4 MiB and a command is killed after 600 seconds;
+- If the panel sends `stop` while a long shell command is running, the command is aborted first and the stop is forwarded immediately;
+- `console.shell=false` is the master switch: it restores the original `inheritIO` passthrough and disables both channels. `console.admin=false` disables only the control channel. Rename prefixes with `console.shell.prefix` and `console.admin.prefix`; keep them different. If they overlap, the longest prefix wins and the control channel wins ties.
+- Shell commands require `/bin/sh` (Linux). The control channel works on Windows as well.
 
 ### YSM / GLIBC_2.18 compatibility
 
@@ -173,7 +234,7 @@ Limitations: x86_64 only; it covers only `__cxa_thread_atexit_impl`. The native 
 4. Check the `mods/` fingerprint; run a full scan and filename cleanup only when needed.
 5. If nothing is launchable and `install.enabled=true`, inspect server archives and install the best candidate.
 6. Build the final command with the selected Java; on affected systems, attach the YSM GLIBC_2.18 shim to the child process.
-7. Launch, forwarding console I/O and shutdown signals.
+7. Launch, forwarding console I/O and shutdown signals. When console channels are enabled, shell/control prefixes are handled locally and all other stdin lines are forwarded to Minecraft.
 
 ## License
 

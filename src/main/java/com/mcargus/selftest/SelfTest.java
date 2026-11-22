@@ -7,7 +7,12 @@ import com.mcargus.discovery.Discovery;
 import com.mcargus.discovery.LaunchTarget;
 import com.mcargus.discovery.LoaderType;
 import com.mcargus.install.Installer;
+import com.mcargus.launch.ConsoleAdmin;
+import com.mcargus.launch.ConsoleInput;
+import com.mcargus.launch.ConsoleRouter;
+import com.mcargus.launch.ConsoleShell;
 import com.mcargus.launch.JvmLocator;
+import com.mcargus.launch.ServerControl;
 import com.mcargus.launch.ServerLauncher;
 import com.mcargus.launch.YsmGlibcFix;
 import com.mcargus.mods.ModSanitizer;
@@ -20,8 +25,16 @@ import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -72,6 +85,8 @@ public final class SelfTest {
         testRootArgsPriority();
         testInstaller();
         testYsmCompat();
+        testConsoleShell();
+        testConsoleAdmin();
         testDashDForward();
         System.out.println("SelfTest: 通过 " + passed + "，失败 " + failed);
         if (failed > 0) {
@@ -719,6 +734,205 @@ public final class SelfTest {
             System.clearProperty(key);
         } else {
             System.setProperty(key, value);
+        }
+    }
+
+    /**
+     * 控制台命令通道：前缀判定、异步执行、cd 生效。
+     * 不启动真实服务端，只验证 ConsoleShell 自身行为。
+     */
+    private static void testConsoleShell() throws Exception {
+        Path dir = Files.createTempDirectory("mcargus-shell");
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        PrintStream ps = new PrintStream(bos, true, "UTF-8");
+        ConsoleShell sh = new ConsoleShell(dir, "!", ps);
+
+        check("shell 识别 ! 前缀", sh.isCommand("!ls"));
+        check("shell 不误判 MC 命令", !sh.isCommand("list") && !sh.isCommand("/stop") && !sh.isCommand(""));
+        check("shell 前缀可配置", new ConsoleShell(dir, ">>", ps).isCommand(">>pwd"));
+        ConsoleShell sh2 = new ConsoleShell(dir, ">>", ps);
+        sh2.handle(">>help");
+        check("shell 帮助使用配置前缀", bos.toString("UTF-8").contains(">>ls"));
+
+        // Windows 没有 /bin/sh：生产环境也明确不支持 shell 命令，自测跳过执行断言。
+        boolean hasSh = new File("/bin/sh").canExecute();
+        if (hasSh) {
+            sh.handle("!echo mcargus-shell-ok");
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline
+                    && !(bos.toString("UTF-8").contains("mcargus-shell-ok")
+                         && bos.toString("UTF-8").contains("[exit 0]"))) {
+                Thread.sleep(50);
+            }
+            String out = bos.toString("UTF-8");
+            check("shell 执行命令", out.contains("mcargus-shell-ok"));
+            check("shell 回显退出码", out.contains("[exit 0]"));
+        } else {
+            check("shell 执行命令（当前平台无 /bin/sh，跳过）", true);
+            check("shell 回显退出码（当前平台无 /bin/sh，跳过）", true);
+        }
+
+        sh.handle("!cd ..");
+        sh.handle("!pwd");
+        Thread.sleep(200);
+        Path parent = dir.toAbsolutePath().normalize().getParent();
+        check("shell cd 生效", bos.toString("UTF-8").contains(parent.toString()));
+
+        if (hasSh) {
+            sh.handle("!definitely_not_a_command_mcargus");
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline
+                    && !bos.toString("UTF-8").contains("[exit 127]")) {
+                Thread.sleep(50);
+            }
+            check("shell 返回非零退出码", bos.toString("UTF-8").contains("[exit 127]"));
+        } else {
+            check("shell 返回非零退出码（当前平台无 /bin/sh，跳过）", true);
+        }
+    }
+
+    /** @ 控制通道：前缀、帮助、状态、重启/停止、菜单与 stdin 路由。 */
+    private static void testConsoleAdmin() throws Exception {
+        Path dir = Files.createTempDirectory("mcargus-admin");
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        PrintStream ps = new PrintStream(bos, true, "UTF-8");
+        ConsoleShell shell = new ConsoleShell(dir, "!", ps);
+        FakeControl ctl = new FakeControl();
+        ConsoleAdmin admin = new ConsoleAdmin(dir, "@", ps, "java", ctl, shell);
+
+        check("admin 识别 @ 前缀", admin.isCommand("@status"));
+        check("admin 不误判 shell/普通行", !admin.isCommand("!ls") && !admin.isCommand("list"));
+
+        admin.handle("@help");
+        String out = bos.toString("UTF-8");
+        check("admin help 含命令", out.contains("@status") && out.contains("@restart") && out.contains("!help"));
+
+        admin.handle("@status");
+        out = bos.toString("UTF-8");
+        check("admin status 输出目录", out.contains(dir.toAbsolutePath().normalize().toString()));
+
+        admin.handle("@restart");
+        check("admin restart 触发", ctl.restartRequested);
+        ctl.restartRequested = false;
+        admin.handle("@stop");
+        check("admin stop 触发", ctl.stopRequested);
+
+        admin.handle("@menu");
+        check("admin menu 捕获输入", admin.isCapturingInput() && admin.isMenuChoice("1"));
+        admin.handleMenuInput("0");
+        check("admin menu 退出", !admin.isCapturingInput());
+
+        admin.handle("@download");
+        check("admin 缺少参数提示", bos.toString("UTF-8").contains("参数不足")
+                || bos.toString("UTF-8").contains("Missing argument"));
+
+        ConsoleAdmin custom = new ConsoleAdmin(dir, "$", ps, "java", ctl, shell);
+        check("admin 前缀可配置", custom.isCommand("$status") && !custom.isCommand("@status"));
+        custom.handle("$help");
+        check("admin 帮助使用配置前缀", bos.toString("UTF-8").contains("$status"));
+
+        // @download：用本地 HTTP 服务验证真实下载与路径落盘
+        ServerSocket ss = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        Thread http = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try (Socket s = ss.accept()) {
+                    InputStream in = s.getInputStream();
+                    byte[] req = new byte[2048];
+                    int total = 0;
+                    while (total < req.length) {
+                        int n = in.read(req, total, req.length - total);
+                        if (n < 0) {
+                            break;
+                        }
+                        total += n;
+                        if (new String(req, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n")) {
+                            break;
+                        }
+                    }
+                    byte[] body = "hello-download".getBytes(StandardCharsets.UTF_8);
+                    OutputStream os = s.getOutputStream();
+                    os.write(("HTTP/1.1 200 OK\r\nContent-Length: " + body.length
+                            + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+                    os.write(body);
+                    os.flush();
+                } catch (IOException ignored) {
+                    // test server
+                }
+            }
+        }, "selftest-http");
+        http.setDaemon(true);
+        http.start();
+        Path downloaded = dir.resolve("dl/file.txt");
+        admin.handle("@download http://127.0.0.1:" + ss.getLocalPort() + "/file.txt dl/file.txt");
+        long dlDeadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < dlDeadline && !Files.isRegularFile(downloaded)) {
+            Thread.sleep(50);
+        }
+        check("admin download 落盘", Files.isRegularFile(downloaded)
+                && "hello-download".equals(new String(Files.readAllBytes(downloaded), StandardCharsets.UTF_8)));
+        ss.close();
+
+        // 单一 stdin 线程：普通行转发给服务端，@ 行被拦截
+        FakeControl c2 = new FakeControl();
+        ByteArrayOutputStream bos2 = new ByteArrayOutputStream();
+        PrintStream ps2 = new PrintStream(bos2, true, "UTF-8");
+        ConsoleShell shell2 = new ConsoleShell(dir, "!", ps2);
+        ConsoleAdmin admin2 = new ConsoleAdmin(dir, "@", ps2, "java", c2, shell2);
+        ConsoleRouter router = new ConsoleRouter(shell2, admin2);
+        ConsoleInput input = new ConsoleInput(new ByteArrayInputStream(
+                "list\n@status\n".getBytes(StandardCharsets.UTF_8)));
+        input.bind(c2, router);
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline
+                && (!c2.sentLines.contains("list") || !bos2.toString("UTF-8").contains(dir.toString()))) {
+            Thread.sleep(50);
+        }
+        check("console input 转发普通行", c2.sentLines.contains("list"));
+        check("console input 拦截控制行", !c2.sentLines.contains("@status"));
+        input.unbind();
+    }
+
+    /** ServerControl 假实现，用于验证 ConsoleAdmin 而不启动 Minecraft。 */
+    private static final class FakeControl implements ServerControl {
+        final List<String> sentLines = new ArrayList<String>();
+        boolean restartRequested;
+        boolean stopRequested;
+        boolean alive = true;
+
+        @Override
+        public void send(String line) throws IOException {
+            sentLines.add(line);
+        }
+
+        @Override
+        public void requestRestart() {
+            restartRequested = true;
+        }
+
+        @Override
+        public void requestStop() {
+            stopRequested = true;
+        }
+
+        @Override
+        public boolean isRestartRequested() {
+            return restartRequested;
+        }
+
+        @Override
+        public boolean isStopRequested() {
+            return stopRequested;
+        }
+
+        @Override
+        public boolean isAlive() {
+            return alive;
+        }
+
+        @Override
+        public long uptimeSeconds() {
+            return 42;
         }
     }
 

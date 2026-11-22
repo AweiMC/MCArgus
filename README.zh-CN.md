@@ -34,6 +34,9 @@ Minecraft 服务端智能启动器：自动定位正确的启动目标（Forge /
   - `--dry-run` 只打印最终命令，不启动。
   - 退出码：`0` 正常、`2` 用法错误、`3` 前置检查失败，其余为服务端自身退出码。
   - 控制台 + 滚动日志文件（`mcargus/logs/mcargus.log`，按天滚动，保留 14 天）。
+- **面板控制台通道**
+  - Shell 前缀（默认 `!`）在服务端目录执行命令；控制前缀（默认 `@`）执行 MCArgus 功能，如重启、下载、安装 Forge/NeoForge。
+  - 不额外监听端口，全部走面板已有控制台；不带前缀的行直接发送给 Minecraft。
 - **界面本地化**
   - 默认简体中文，内置英语。
   - 在配置文件中设置 `locale=en_us` 即可切换（见下文）。
@@ -116,6 +119,10 @@ java -jar mcargus.jar --dir /srv/mc --java /usr/lib/jvm/java-21/bin/java --resca
 | `program.args` | `nogui` | 传给服务端的程序参数 |
 | `mods.sanitize` | `true` | 启动前清理 `mods/` 文件名中的下载站前缀 |
 | `ysm.compat` | `true` | 需要时启用 YSM GLIBC_2.18 兼容层（Linux x86_64、glibc < 2.18、`mods/` 内有 YSM） |
+| `console.shell` | `true` | 接管面板控制台：Shell 前缀开头的行在服务端目录执行命令 |
+| `console.shell.prefix` | `!` | Shell 命令前缀；与模组命令冲突时可改（如 `>>`） |
+| `console.admin` | `true` | 启用 MCArgus 控制命令（`@restart`、`@download`、`@installforge` 等） |
+| `console.admin.prefix` | `@` | MCArgus 控制命令前缀 |
 | `install.enabled` | `true` | 没有启动目标时，自动从服务端压缩包安装 |
 | `install.zipEncoding` | `GBK` | 非 UTF-8 zip 条目名的编码（中文打包工具常见） |
 
@@ -133,6 +140,60 @@ java -jar mcargus.jar --dir /srv/mc --java /usr/lib/jvm/java-21/bin/java --resca
 3. 重新启动 MCArgus。此时 `--help`、日志、诊断与错误提示均为英语。
 
 改回 `locale=zh_cn`（或删除该键）即可恢复简体中文。
+
+### 控制台通道
+
+Pterodactyl 一类的面板只能把文本写进进程 stdin。MCArgus 接管 stdin 后提供两个独立通道；**不带任何前缀的行直接发送给 Minecraft**，`stop`、`list` 和模组命令照常工作。
+
+**Shell 通道**——默认前缀 `!`（`console.shell.prefix`）：
+
+```text
+!ls -la                   列出当前目录
+!ps aux                   查看进程
+!df -h                    查看磁盘
+!free -m                  查看内存
+!cat logs/latest.log      查看日志
+!cd mods                  切换目录（影响后续命令）
+!pwd                      显示当前目录
+!wget -O mods/x.jar URL   下载文件
+!unzip x.zip              解压
+!help                     显示帮助
+```
+
+带前缀的行会在服务端目录下用 `/bin/sh -c` 执行，输出实时回到面板控制台。
+
+**MCArgus 控制通道**——默认前缀 `@`（`console.admin.prefix`）：
+
+```text
+@help                                  显示控制命令
+@status                                版本、目录、Java、运行时长、前缀
+@restart                               停止服务端并由 MCArgus 重新启动
+@stop                                  停止服务端并退出 MCArgus
+@download <url> [path]                 下载文件到服务端目录
+@installforge <installer.jar|url>      用 Forge 安装器执行 --installServer
+@installneoforge <installer.jar|url>   用 NeoForge 安装器执行 --installServer
+@menu                                  数字控制菜单（TUI）
+```
+
+示例：
+
+```text
+@download https://example.com/mods/foo.jar mods/foo.jar
+@installforge forge-1.20.1-47.4.29-installer.jar
+@installforge https://example.com/forge-installer.jar
+@installneoforge neoforge-21.1.80-installer.jar
+```
+
+`@installforge` / `@installneoforge` 支持直接给安装器文件或 URL；给 URL 时会先下载到服务端目录，再执行安装。安装成功后用 `@restart` 让 MCArgus 重新发现启动目标。版本查询/选择暂未自动化：请下载或上传目标版本的安装器。
+
+`@restart` 是在同一个 MCArgus 进程内重启 Minecraft 服务端，并会重新发现启动目标，因此安装 Forge/NeoForge 后可以直接使用。修改 `mcargus.properties`（包括两个前缀）后仍需要完整重启 MCArgus/容器才会生效。
+
+- **不监听端口**：全部走面板已有的 WebSocket 控制台，只有一个 MC 端口也能用；
+- Shell 命令以容器内运行用户身份执行，权限等同服务器控制权，请勿外泄面板账号；
+- 单条 Shell 命令最多回显 4 MiB、最长执行 600 秒；
+- 长命令执行期间，面板发来的 `stop` 会先中止该命令再转发，不会因为 `wget` 没跑完而卡住关服；
+- `console.shell=false` 是总开关：恢复原来的 `inheritIO` 全透传，同时关闭两个通道；`console.admin=false` 只关闭控制通道。前缀分别由 `console.shell.prefix`、`console.admin.prefix` 配置，建议保持不同；重叠时按最长前缀匹配，长度相同则控制通道优先；
+- Shell 命令依赖 `/bin/sh`（Linux）；控制通道在 Windows 上也可用。
 
 ### YSM / GLIBC_2.18 兼容层
 
@@ -173,7 +234,7 @@ java -Dmcargus.ysm.glibc=2.17 -jar mcargus.jar
 4. 检查 `mods/` 指纹，仅在需要时执行完整扫描与文件名清理。
 5. 若仍无可启动目标且 `install.enabled=true`，检查服务端压缩包并安装最合适的候选。
 6. 使用选定的 Java 组装最终命令；在受影响的环境里，为子进程挂上 YSM GLIBC_2.18 兼容层。
-7. 启动服务端，转发控制台 I/O 与停止信号。
+7. 启动服务端，转发控制台 I/O 与停止信号；开启控制台通道时，Shell/控制前缀在本地处理，其余 stdin 行原样转发给 Minecraft。
 
 ## 许可证
 

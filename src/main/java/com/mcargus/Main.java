@@ -144,6 +144,10 @@ public final class Main {
             cfg.set(Config.K_PROG_ARGS, "nogui");
             cfg.set(Config.K_MODS_SANITIZE, "true");
             cfg.set(Config.K_YSM_COMPAT, "true");
+            cfg.set(Config.K_CONSOLE_SHELL, "true");
+            cfg.set(Config.K_CONSOLE_PREFIX, "!");
+            cfg.set(Config.K_CONSOLE_ADMIN, "true");
+            cfg.set(Config.K_CONSOLE_ADMIN_PREFIX, "@");
             cfg.save();
             Log.info(Messages.get("main.configCreated", configPath));
         }
@@ -169,23 +173,9 @@ public final class Main {
         }
 
         JvmLocator jvm = JvmLocator.resolve(cfg.get(Config.K_JAVA_PATH, ""), cli.javaPath);
+        LaunchTarget target = resolveLaunchTarget(serverDir, cfg, cli, cli.rescan);
 
-        LaunchTarget target;
-        try {
-            target = Discovery.resolveTarget(serverDir, cfg, cli.rescan,
-                    cli.argsFileOverride, selfJarPath(), isWindows());
-        } catch (Errors.PreflightException noTarget) {
-            // 没有任何启动目标：尝试从服务端压缩包自动安装，然后重新发现
-            if (!cfg.getBool(Config.K_INSTALL_ENABLED, true)) {
-                throw noTarget;
-            }
-            Log.info(Messages.get("main.tryInstall"));
-            Installer.ensureInstalled(serverDir, cfg);
-            target = Discovery.resolveTarget(serverDir, cfg, false,
-                    cli.argsFileOverride, selfJarPath(), isWindows());
-        }
-
-        List<String> parentArgs = cfg.getBool(Config.K_JVM_FORWARD, true)
+        final List<String> parentArgs = cfg.getBool(Config.K_JVM_FORWARD, true)
                 ? filterParentArgs(ManagementFactory.getRuntimeMXBean().getInputArguments())
                 : new ArrayList<String>();
         if (!parentArgs.isEmpty()) {
@@ -204,7 +194,39 @@ public final class Main {
             return 0;
         }
 
-        return ServerLauncher.run(plan);
+        // @restart 时重新发现目标（安装 Forge/NeoForge 后 args 文件会变化），而不是复用旧命令。
+        final Path restartDir = serverDir;
+        final Config restartCfg = cfg;
+        final Main.Cli restartCli = cli;
+        ServerLauncher.PlanFactory factory = new ServerLauncher.PlanFactory() {
+            @Override
+            public ServerLauncher.Plan create() throws Exception {
+                JvmLocator j = JvmLocator.resolve(restartCfg.get(Config.K_JAVA_PATH, ""),
+                        restartCli.javaPath);
+                LaunchTarget t = resolveLaunchTarget(restartDir, restartCfg, restartCli, true);
+                Log.info(Messages.get("main.target", t.describe()));
+                return ServerLauncher.buildPlan(restartDir, restartCfg, restartCli.jvm,
+                        restartCli.programArgs, restartCli.passthrough, t, j, parentArgs);
+            }
+        };
+        return ServerLauncher.run(plan, factory);
+    }
+
+    /** 解析启动目标；没有目标时按配置尝试压缩包自动安装后重新发现。 */
+    private static LaunchTarget resolveLaunchTarget(Path serverDir, Config cfg, Cli cli, boolean rescan)
+            throws Exception {
+        try {
+            return Discovery.resolveTarget(serverDir, cfg, rescan,
+                    cli.argsFileOverride, selfJarPath(), isWindows());
+        } catch (Errors.PreflightException noTarget) {
+            if (!cfg.getBool(Config.K_INSTALL_ENABLED, true)) {
+                throw noTarget;
+            }
+            Log.info(Messages.get("main.tryInstall"));
+            Installer.ensureInstalled(serverDir, cfg);
+            return Discovery.resolveTarget(serverDir, cfg, false,
+                    cli.argsFileOverride, selfJarPath(), isWindows());
+        }
     }
 
     /**

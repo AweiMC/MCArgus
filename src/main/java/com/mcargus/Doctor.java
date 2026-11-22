@@ -27,6 +27,10 @@ public final class Doctor {
         kv(Messages.get("doctor.configFile"), cfg.getFile().toString()
                 + (cfg.exists() ? Messages.get("doctor.cfgExists") : Messages.get("doctor.cfgMissing"))
                 + (cfg.isRecovered() ? Messages.get("doctor.cfgRecovered") : ""));
+        kv("console.shell", cfg.getBool(Config.K_CONSOLE_SHELL, true)
+                + " (" + cfg.get(Config.K_CONSOLE_PREFIX, "!") + ")");
+        kv("console.admin", cfg.getBool(Config.K_CONSOLE_ADMIN, true)
+                + " (" + cfg.get(Config.K_CONSOLE_ADMIN_PREFIX, "@") + ")");
 
         sec(Messages.get("doctor.secJava"));
         JvmLocator jvm = JvmLocator.resolve(cfg.get(Config.K_JAVA_PATH, ""), cli.javaPath);
