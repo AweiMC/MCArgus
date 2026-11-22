@@ -1,0 +1,4 @@
+GLIBC_2.18 {
+  global: __cxa_thread_atexit_impl;
+  local: *;
+};

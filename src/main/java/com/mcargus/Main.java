@@ -142,6 +142,7 @@ public final class Main {
             cfg.set(Config.K_JVM_USERFILE, "true");
             cfg.set(Config.K_PROG_ARGS, "nogui");
             cfg.set(Config.K_MODS_SANITIZE, "true");
+            cfg.set(Config.K_YSM_COMPAT, "true");
             cfg.save();
             Log.info(Messages.get("main.configCreated", configPath));
         }

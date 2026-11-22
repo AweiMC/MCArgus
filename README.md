@@ -16,6 +16,9 @@ Built for panels such as Pterodactyl, but works anywhere Java runs.
 - **Native Java, no library hacks**
   - Always launches with the system Java and never replaces the host's dynamic linker or libc.
   - If a mod's native library needs a newer GLIBC, the log explains it and suggests upgrading the OS.
+- **YSM / GLIBC_2.18 compatibility**
+  - On Linux x86_64 with glibc older than 2.18, automatically preloads a small bundled shim for Yes Steve Model (YSM).
+  - Affects only the server child process; no system libraries, jars, or mod files are modified.
 - **mods/ filename cleanup**
   - Removes download-site decorations such as `[JEI背包管理器[Forge]]jei.jar` → `jei.jar`.
   - Skips name collisions with a warning so duplicate mods are not introduced.
@@ -111,6 +114,7 @@ Common keys:
 | `jvm.useUserJvmArgs` | `true` | Read `user_jvm_args.txt` (Forge/NeoForge standard) |
 | `program.args` | `nogui` | Arguments passed to the server |
 | `mods.sanitize` | `true` | Clean download-site prefixes in `mods/` filenames before launch |
+| `ysm.compat` | `true` | Enable the YSM GLIBC_2.18 compat layer when needed (Linux x86_64, glibc < 2.18, YSM in `mods/`) |
 | `install.enabled` | `true` | Auto-install from a server archive when no launch target exists |
 | `install.zipEncoding` | `GBK` | Encoding for non-UTF-8 zip entry names (Chinese packaging tools) |
 
@@ -129,6 +133,37 @@ Common keys:
 
 Set `locale=zh_cn` (or remove the key) to return to Simplified Chinese.
 
+### YSM / GLIBC_2.18 compatibility
+
+Some YSM (Yes Steve Model) native builds require `__cxa_thread_atexit_impl@GLIBC_2.18`. On CentOS 7 (glibc 2.17) that version node does not exist, and the server fails with `version 'GLIBC_2.18' not found`.
+
+MCArgus bundles a 15 KB `libysmboot.so`. When all of the following are true, it extracts the shim to `mcargus/native/libysmboot.so` and prepends it to the server process's `LD_PRELOAD`:
+
+- Linux x86_64;
+- host glibc < 2.18 (musl / Alpine is skipped);
+- `mods/` contains a YSM jar (`ysm*`, `yes_steve_model*`, `yesstevemodel*`);
+- `ysm.compat=true` (the default).
+
+The shim appends the missing GLIBC version node in the process's memory (rewriting only the 4-byte `vd_next` pointer at the end of libc's in-memory verdef chain) and implements the symbol. It does not modify the libc file, the server jar, or any mod file, so YSM's integrity check still passes. It applies only to the server child process; MCArgus itself runs without it.
+
+The log shows a line such as:
+
+```text
+glibc 2.17 detected; enabled the GLIBC_2.18 compat layer for YSM (server process only, system libraries untouched).
+```
+
+To disable it, set `ysm.compat=false` in `mcargus.properties`. On glibc 2.18+ the shim is skipped automatically, so no cleanup is needed.
+
+If a minimal container lacks both `getconf` and `ldd`, specify the version on **MCArgus's own** command line:
+
+```bash
+java -Dmcargus.ysm.glibc=2.17 -jar mcargus.jar
+```
+
+Do not put this in `jvm.extraArgs`: those arguments are forwarded to the server JVM, not read by MCArgus.
+
+Limitations: x86_64 only; it covers only `__cxa_thread_atexit_impl`. The native source is in [`src/native/`](src/native/).
+
 ## How it works
 
 1. Parse options and initialize the locale.
@@ -136,7 +171,8 @@ Set `locale=zh_cn` (or remove the key) to return to Simplified Chinese.
 3. Find a launch target: `--args-file` → root args file → cached target → full scan → jar fallback.
 4. Check the `mods/` fingerprint; run a full scan and filename cleanup only when needed.
 5. If nothing is launchable and `install.enabled=true`, inspect server archives and install the best candidate.
-6. Build the final command with the selected Java and launch, forwarding console I/O and shutdown signals.
+6. Build the final command with the selected Java; on affected systems, attach the YSM GLIBC_2.18 shim to the child process.
+7. Launch, forwarding console I/O and shutdown signals.
 
 ## License
 

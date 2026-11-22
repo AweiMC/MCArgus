@@ -28,6 +28,7 @@ public final class Config {
     public static final String K_JVM_USERFILE = "jvm.useUserJvmArgs";
     public static final String K_PROG_ARGS = "program.args";
     public static final String K_MODS_SANITIZE = "mods.sanitize";
+    public static final String K_YSM_COMPAT = "ysm.compat";
     public static final String K_SCAN_COMPLETED = "scan.scanCompleted";
     public static final String K_SCAN_FINGERPRINT = "scan.modsFingerprint";
     public static final String K_INSTALL_ENABLED = "install.enabled";

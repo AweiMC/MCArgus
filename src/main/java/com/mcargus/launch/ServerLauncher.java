@@ -34,15 +34,17 @@ public final class ServerLauncher {
         public final LaunchTarget target;
         public final String javaExecutable;
         public final Path workDir;
+        public final boolean ysmCompat;
 
         public Plan(List<String> command, List<String> jvmArgs, List<String> programArgs,
-                    LaunchTarget target, String javaExecutable, Path workDir) {
+                    LaunchTarget target, String javaExecutable, Path workDir, boolean ysmCompat) {
             this.command = command;
             this.jvmArgs = jvmArgs;
             this.programArgs = programArgs;
             this.target = target;
             this.javaExecutable = javaExecutable;
             this.workDir = workDir;
+            this.ysmCompat = ysmCompat;
         }
 
         public String commandLineForDisplay() {
@@ -99,7 +101,8 @@ public final class ServerLauncher {
         }
         cmd.addAll(progArgs);
 
-        return new Plan(cmd, jvmArgs, progArgs, target, jvm.executable(), serverDir);
+        return new Plan(cmd, jvmArgs, progArgs, target, jvm.executable(), serverDir,
+                cfg.getBool(Config.K_YSM_COMPAT, true));
     }
 
     public static int run(Plan plan) throws IOException, InterruptedException {
@@ -109,6 +112,13 @@ public final class ServerLauncher {
 
         ProcessBuilder pb = new ProcessBuilder(plan.command);
         pb.directory(plan.workDir.toFile());
+
+        // YSM + glibc < 2.18：把兼容层挂到子进程的 LD_PRELOAD 上。
+        // 只影响这个子进程，不改系统库、不改 mods/ 里的任何文件。
+        if (plan.ysmCompat) {
+            YsmGlibcFix.apply(pb, plan.workDir);
+        }
+
         // 子进程直接继承 MCArgus 的 stdin/stdout/stderr：
         //  - 面板控制台输入（Pterodactyl 发送的 stop 等指令）直达服务端；
         //  - 服务端 stdout/stderr 原样出现在面板控制台；

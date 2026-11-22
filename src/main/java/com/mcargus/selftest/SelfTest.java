@@ -9,6 +9,7 @@ import com.mcargus.discovery.LoaderType;
 import com.mcargus.install.Installer;
 import com.mcargus.launch.JvmLocator;
 import com.mcargus.launch.ServerLauncher;
+import com.mcargus.launch.YsmGlibcFix;
 import com.mcargus.mods.ModSanitizer;
 import com.mcargus.mods.ScanManager;
 import com.mcargus.util.Log;
@@ -58,6 +59,7 @@ public final class SelfTest {
         testShutdownChild();
         testRootArgsPriority();
         testInstaller();
+        testYsmCompat();
         testDashDForward();
         System.out.println("SelfTest: 通过 " + passed + "，失败 " + failed);
         if (failed > 0) {
@@ -596,6 +598,62 @@ public final class SelfTest {
             }
         } finally {
             tos.close();
+        }
+    }
+
+    private static void testYsmCompat() throws Exception {
+        String osName = System.getProperty("os.name");
+        String osArch = System.getProperty("os.arch");
+        String glibc = System.getProperty("mcargus.ysm.glibc");
+        try {
+            Path root = tempRoot();
+            Files.createDirectories(root.resolve("mods"));
+            Files.write(root.resolve("mods/ysm-test.jar"), new byte[0]);
+
+            System.setProperty("os.name", "Windows 11");
+            System.setProperty("os.arch", "amd64");
+            System.setProperty("mcargus.ysm.glibc", "2.17");
+            check("ysm 非 Linux 跳过", YsmGlibcFix.prepare(root) == null);
+
+            System.setProperty("os.name", "Linux");
+            System.setProperty("mcargus.ysm.glibc", "2.18");
+            check("ysm glibc>=2.18 跳过", YsmGlibcFix.prepare(root) == null);
+
+            Path noYsm = tempRoot();
+            System.setProperty("mcargus.ysm.glibc", "2.17");
+            check("ysm 无 YSM 跳过", YsmGlibcFix.prepare(noYsm) == null);
+
+            System.setProperty("os.arch", "aarch64");
+            check("ysm 非 x86_64 跳过", YsmGlibcFix.prepare(root) == null);
+
+            System.setProperty("os.arch", "amd64");
+            YsmGlibcFix.Prepared p = YsmGlibcFix.prepare(root);
+            check("ysm glibc 2.17 启用", p != null && "2.17".equals(p.glibcVersion));
+            Path so = root.resolve("mcargus/native/libysmboot.so");
+            check("ysm 解包 so", Files.isRegularFile(so) && Files.size(so) > 0);
+            check("ysm so 路径", p != null && p.soPath.equals(so.toAbsolutePath().toString()));
+            check("ysm 资源已打包", YsmGlibcFix.class.getResource("/native/libysmboot.so") != null);
+
+            ProcessBuilder pb = new ProcessBuilder();
+            check("ysm 注入 LD_PRELOAD", YsmGlibcFix.apply(pb, root));
+            check("ysm LD_PRELOAD 值", p != null && p.soPath.equals(pb.environment().get("LD_PRELOAD")));
+            pb.environment().put("LD_PRELOAD", "/opt/existing.so");
+            YsmGlibcFix.apply(pb, root);
+            check("ysm 保留原 LD_PRELOAD",
+                    p != null && (p.soPath + ":/opt/existing.so").equals(pb.environment().get("LD_PRELOAD")));
+            check("ysm 不需要时不注入", !YsmGlibcFix.apply(new ProcessBuilder(), noYsm));
+        } finally {
+            restoreProperty("os.name", osName);
+            restoreProperty("os.arch", osArch);
+            restoreProperty("mcargus.ysm.glibc", glibc);
+        }
+    }
+
+    private static void restoreProperty(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
         }
     }
 

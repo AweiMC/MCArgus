@@ -16,6 +16,9 @@ Minecraft 服务端智能启动器：自动定位正确的启动目标（Forge /
 - **使用系统原生 Java，不折腾系统库**
   - 始终用系统 Java 启动，不替换或干预宿主机的动态链接器与 libc。
   - 若模组原生库要求的 GLIBC 版本高于宿主机，日志会给出说明并建议升级操作系统。
+- **YSM / GLIBC_2.18 兼容层**
+  - 在 glibc 低于 2.18 的 Linux x86_64 上，自动为 Yes Steve Model（YSM）预加载一个内置的小型兼容层。
+  - 只作用于服务端子进程，不修改系统库、服务端 Jar 或任何模组文件。
 - **mods/ 文件名清理**
   - 清理下载站前缀装饰，如 `[JEI背包管理器[Forge]]jei.jar` → `jei.jar`。
   - 重名时跳过并警告，避免引入重复模组。
@@ -111,6 +114,7 @@ java -jar mcargus.jar --dir /srv/mc --java /usr/lib/jvm/java-21/bin/java --resca
 | `jvm.useUserJvmArgs` | `true` | 读取 `user_jvm_args.txt`（Forge/NeoForge 标准做法） |
 | `program.args` | `nogui` | 传给服务端的程序参数 |
 | `mods.sanitize` | `true` | 启动前清理 `mods/` 文件名中的下载站前缀 |
+| `ysm.compat` | `true` | 需要时启用 YSM GLIBC_2.18 兼容层（Linux x86_64、glibc < 2.18、`mods/` 内有 YSM） |
 | `install.enabled` | `true` | 没有启动目标时，自动从服务端压缩包安装 |
 | `install.zipEncoding` | `GBK` | 非 UTF-8 zip 条目名的编码（中文打包工具常见） |
 
@@ -129,6 +133,37 @@ java -jar mcargus.jar --dir /srv/mc --java /usr/lib/jvm/java-21/bin/java --resca
 
 改回 `locale=zh_cn`（或删除该键）即可恢复简体中文。
 
+### YSM / GLIBC_2.18 兼容层
+
+部分 YSM（Yes Steve Model）原生库需要 `__cxa_thread_atexit_impl@GLIBC_2.18`。CentOS 7 的 glibc 2.17 没有这个版本节点，服务端会报 `version 'GLIBC_2.18' not found` 并启动失败。
+
+MCArgus 内置了一个 15 KB 的 `libysmboot.so`。当以下条件全部满足时，它会把兼容层解包到 `mcargus/native/libysmboot.so`，并前置到服务端子进程的 `LD_PRELOAD`：
+
+- Linux x86_64；
+- 宿主 glibc < 2.18（musl / Alpine 会跳过）；
+- `mods/` 内存在 YSM 的 Jar（`ysm*`、`yes_steve_model*`、`yesstevemodel*`）；
+- `ysm.compat=true`（默认）。
+
+兼容层只在进程内存中补上缺失的 GLIBC 版本节点（仅改写 libc 内存 verdef 链尾的 4 字节 `vd_next` 指针）并实现该符号，不修改磁盘上的 `libc`、服务端 Jar 或任何模组文件，因此 YSM 的完整性自校验仍会通过。它只作用于服务端子进程，MCArgus 自身不会加载。
+
+启用后日志会多出一行，例如：
+
+```text
+检测到 glibc 2.17，已为 YSM 启用 GLIBC_2.18 兼容层（仅作用于服务端进程，不改系统库）。
+```
+
+如需关闭，在 `mcargus.properties` 中设置 `ysm.compat=false`。系统升级到 glibc 2.18+ 后会自动跳过，无需清理。
+
+极简容器里 `getconf` 与 `ldd` 都不可用时，可在 **MCArgus 自己的启动命令**上手动指定版本：
+
+```bash
+java -Dmcargus.ysm.glibc=2.17 -jar mcargus.jar
+```
+
+不要写进 `jvm.extraArgs`：那些参数是转发给服务端 JVM 的，MCArgus 不会读取。
+
+限制：仅支持 x86_64；只补 `__cxa_thread_atexit_impl` 这一个符号。原生源码位于 [`src/native/`](src/native/)。
+
 ## 工作流程
 
 1. 解析选项并初始化界面语言。
@@ -136,7 +171,8 @@ java -jar mcargus.jar --dir /srv/mc --java /usr/lib/jvm/java-21/bin/java --resca
 3. 查找启动目标：`--args-file` → 根层参数文件 → 缓存目标 → 完整扫描 → Jar 兜底。
 4. 检查 `mods/` 指纹，仅在需要时执行完整扫描与文件名清理。
 5. 若仍无可启动目标且 `install.enabled=true`，检查服务端压缩包并安装最合适的候选。
-6. 使用选定的 Java 组装最终命令并启动，转发控制台 I/O 与停止信号。
+6. 使用选定的 Java 组装最终命令；在受影响的环境里，为子进程挂上 YSM GLIBC_2.18 兼容层。
+7. 启动服务端，转发控制台 I/O 与停止信号。
 
 ## 许可证
 
