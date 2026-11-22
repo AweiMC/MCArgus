@@ -14,8 +14,15 @@ dependencies {
     // 统一日志门面 + Logback 后端（1.2.x 兼容 Java 8 运行时）
     implementation 'org.slf4j:slf4j-api:1.7.36'
     implementation 'ch.qos.logback:logback-classic:1.6.6'
-    // tar/tar.gz 压缩包支持（zip 用 JDK 内置）
+    // tar / tar.gz / tar.bz2 / tar.xz / 7z 压缩包支持（zip 用 JDK 内置）
     implementation 'org.apache.commons:commons-compress:1.28.0'
+    // commons-compress 的 xz / 7z(LZMA) 解码后端
+    implementation 'org.tukaani:xz:1.12'
+    // rar 解压（UnRAR License；见 THIRD-PARTY-NOTICES.md）
+    implementation('com.github.junrar:junrar:8.1.2') {
+        // junrar 只用到 Logger.error/warn，沿用项目现有的 slf4j 版本即可
+        exclude group: 'org.slf4j', module: 'slf4j-api'
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -41,6 +48,9 @@ jar {
     }
     archiveFileName = 'mcargus.jar'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // 让单独分发的 jar 也带上许可证与第三方声明
+    from('LICENSE') { into 'META-INF' }
+    from('THIRD-PARTY-NOTICES.md') { into 'META-INF' }
     from {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
     }

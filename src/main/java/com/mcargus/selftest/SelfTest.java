@@ -15,12 +15,19 @@ import com.mcargus.mods.ScanManager;
 import com.mcargus.util.Log;
 import com.mcargus.util.VersionUtil;
 
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
+
 import java.io.File;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +41,10 @@ import java.util.zip.ZipOutputStream;
  * 自身排除与安装器识别、命令组装、user_jvm_args。
  */
 public final class SelfTest {
+    /** 123 字节 RAR4 测试包：内含 libraries / FILE2.TXT，用于验证 RAR 解压链路。 */
+    private static final String RAR_FIXTURE =
+            "UmFyIRoHAM+QcwAADQAAAAAAAABxfHQggCkABwAAAAcAAAACun0Zem4DYz0dMAkAIAAAAGxpYnJhcmllc2ZpbGUxDQo8d3QggCkABwAAAAcAAAAC48NfeHEDYz0dMAkAIAAAAEZJTEUyLlRYVGZpbGUyDQrEPXsAQAcA";
+
     private static int passed;
     private static int failed;
 
@@ -571,9 +582,34 @@ public final class SelfTest {
 
         // 场景J：tar.gz 支持
         Path j = tempRoot();
-        makeTarGz(j.resolve("pack.tar.gz"), flat);
+        makeTar(j.resolve("pack.tar.gz"), flat, "gz");
         Installer.ensureInstalled(j, newConfig(j));
         check("install tar.gz 支持", Files.exists(j.resolve("unix_args.txt")));
+
+        // 场景K：tar.bz2 支持
+        Path k = tempRoot();
+        makeTar(k.resolve("pack.tar.bz2"), flat, "bz2");
+        Installer.ensureInstalled(k, newConfig(k));
+        check("install tar.bz2 支持", Files.exists(k.resolve("unix_args.txt")));
+
+        // 场景L：tar.xz 支持
+        Path l = tempRoot();
+        makeTar(l.resolve("pack.tar.xz"), flat, "xz");
+        Installer.ensureInstalled(l, newConfig(l));
+        check("install tar.xz 支持", Files.exists(l.resolve("unix_args.txt")));
+
+        // 场景M：7z 支持
+        Path m = tempRoot();
+        make7z(m.resolve("pack.7z"), flat);
+        Installer.ensureInstalled(m, newConfig(m));
+        check("install 7z 支持", Files.exists(m.resolve("unix_args.txt")));
+
+        // 场景N：rar 支持
+        Path n = tempRoot();
+        makeRar(n.resolve("pack.rar"));
+        Installer.ensureInstalled(n, newConfig(n));
+        check("install rar 支持", Files.exists(n.resolve("libraries"))
+                && Files.exists(n.resolve("FILE2.TXT")));
     }
 
     private static Map<String, String> single(String k, String v) {
@@ -582,24 +618,52 @@ public final class SelfTest {
         return m;
     }
 
-    private static void makeTarGz(Path out, Map<String, String> entries) throws Exception {
+    private static void makeTar(Path out, Map<String, String> entries, String kind) throws Exception {
         Files.createDirectories(out.getParent());
-        org.apache.commons.compress.archivers.tar.TarArchiveOutputStream tos =
-                new org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(
-                        new java.util.zip.GZIPOutputStream(Files.newOutputStream(out)));
-        try {
+        try (OutputStream raw = Files.newOutputStream(out)) {
+            OutputStream compressed;
+            if ("gz".equals(kind)) {
+                compressed = new java.util.zip.GZIPOutputStream(raw);
+            } else if ("bz2".equals(kind)) {
+                compressed = new BZip2CompressorOutputStream(raw);
+            } else if ("xz".equals(kind)) {
+                compressed = new XZCompressorOutputStream(raw);
+            } else {
+                compressed = raw;
+            }
+            try (org.apache.commons.compress.archivers.tar.TarArchiveOutputStream tos =
+                         new org.apache.commons.compress.archivers.tar.TarArchiveOutputStream(compressed)) {
+                for (Map.Entry<String, String> e : entries.entrySet()) {
+                    byte[] data = e.getValue().getBytes(StandardCharsets.UTF_8);
+                    org.apache.commons.compress.archivers.tar.TarArchiveEntry te =
+                            new org.apache.commons.compress.archivers.tar.TarArchiveEntry(e.getKey());
+                    te.setSize(data.length);
+                    tos.putArchiveEntry(te);
+                    tos.write(data);
+                    tos.closeArchiveEntry();
+                }
+            }
+        }
+    }
+
+    private static void make7z(Path out, Map<String, String> entries) throws Exception {
+        Files.createDirectories(out.getParent());
+        try (SevenZOutputFile sz = new SevenZOutputFile(out.toFile())) {
             for (Map.Entry<String, String> e : entries.entrySet()) {
                 byte[] data = e.getValue().getBytes(StandardCharsets.UTF_8);
-                org.apache.commons.compress.archivers.tar.TarArchiveEntry te =
-                        new org.apache.commons.compress.archivers.tar.TarArchiveEntry(e.getKey());
-                te.setSize(data.length);
-                tos.putArchiveEntry(te);
-                tos.write(data);
-                tos.closeArchiveEntry();
+                SevenZArchiveEntry se = new SevenZArchiveEntry();
+                se.setName(e.getKey());
+                se.setSize(data.length);
+                sz.putArchiveEntry(se);
+                sz.write(data);
+                sz.closeArchiveEntry();
             }
-        } finally {
-            tos.close();
         }
+    }
+
+    private static void makeRar(Path out) throws Exception {
+        Files.createDirectories(out.getParent());
+        Files.write(out, Base64.getDecoder().decode(RAR_FIXTURE));
     }
 
     private static void testYsmCompat() throws Exception {

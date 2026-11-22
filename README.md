@@ -24,8 +24,9 @@ Built for panels such as Pterodactyl, but works anywhere Java runs.
   - Skips name collisions with a warning so duplicate mods are not introduced.
   - Runs before launch, with a fast fingerprint check to skip unchanged folders.
 - **Archive auto-install**
-  - If no launch target exists, looks for a server archive (`zip` / `tar.gz` / `tgz` / `tar`) and installs it.
+  - If no launch target exists, looks for a server archive (`zip`, `tar`, `tar.gz`/`tgz`, `tar.bz2`/`tbz2`, `tar.xz`/`txz`, `7z`, `rar`) and installs it.
   - Never overwrites existing files.
+  - RAR extraction uses the bundled junrar library under the UnRAR License; it is used only to extract archives and must not be used to build a RAR-compatible archiver. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
   - Recognizes CurseForge client modpacks and refuses them with a clear message (use the Server Pack instead).
   - Stops instead of guessing when several archives are present.
 - **Operations friendly**
@@ -176,4 +177,6 @@ Limitations: x86_64 only; it covers only `__cxa_thread_atexit_impl`. The native 
 
 ## License
 
-[MIT](LICENSE) © 2026 AweiMC
+MCArgus is released under the [MIT License](LICENSE) © 2026 AweiMC.
+
+The fat jar bundles third-party components under their own licenses. In particular, RAR extraction uses **junrar** under the **UnRAR License**; it may not be used to develop a RAR-compatible archiver. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.

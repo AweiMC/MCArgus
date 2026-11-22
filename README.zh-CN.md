@@ -24,8 +24,9 @@ Minecraft 服务端智能启动器：自动定位正确的启动目标（Forge /
   - 重名时跳过并警告，避免引入重复模组。
   - 启动前执行，并通过指纹快速跳过未变化的目录。
 - **压缩包自动安装**
-  - 没有可用启动目标时，自动查找服务端压缩包（`zip` / `tar.gz` / `tgz` / `tar`）并安装。
+  - 没有可用启动目标时，自动查找服务端压缩包（`zip`、`tar`、`tar.gz`/`tgz`、`tar.bz2`/`tbz2`、`tar.xz`/`txz`、`7z`、`rar`）并安装。
   - 绝不覆盖已存在的文件。
+  - RAR 解压使用内置的 junrar 库（UnRAR License），仅用于解压，不得用于开发 RAR 兼容压缩器；详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
   - 能识别 CurseForge 客户端整合包并明确拒绝（请改用 Server Pack）。
   - 存在多个压缩包且无法判定时直接中止，不盲目选择。
 - **便于运维**
@@ -176,4 +177,6 @@ java -Dmcargus.ysm.glibc=2.17 -jar mcargus.jar
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 AweiMC
+MCArgus 本身以 [MIT License](LICENSE) 发布 © 2026 AweiMC。
+
+Fat Jar 内含按各自许可证分发的第三方组件。其中 RAR 解压使用 **junrar**（**UnRAR License**），仅用于解压，不得用于开发 RAR 兼容压缩器。详情见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

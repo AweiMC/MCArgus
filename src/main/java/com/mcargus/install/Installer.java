@@ -1,5 +1,8 @@
 package com.mcargus.install;
 
+import com.github.junrar.Archive;
+import com.github.junrar.exception.RarException;
+import com.github.junrar.rarfile.FileHeader;
 import com.mcargus.Config;
 import com.mcargus.Errors;
 import com.mcargus.i18n.Messages;
@@ -7,11 +10,15 @@ import com.mcargus.util.Log;
 
 import org.apache.commons.compress.archivers.ArchiveEntry;
 import org.apache.commons.compress.archivers.ArchiveInputStream;
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -34,8 +41,10 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 服务端压缩包自动安装：目录内没有任何启动目标时，识别 zip/tar.gz/tgz/tar 压缩包，
+ * 服务端压缩包自动安装：目录内没有任何启动目标时，识别
+ * zip / tar / tar.gz / tar.bz2 / tar.xz / 7z / rar 压缩包，
  * 解压到隔离暂存目录，定位服务端根目录（支持无包裹/单层/多层包裹），再安装到服务器根目录。
+ * RAR 解压由 junrar 提供（UnRAR License，见 THIRD-PARTY-NOTICES.md）。
  *
  * 安全与幂等设计：
  *  - 压缩包以"魔数+扩展名"双重识别，绝不改动原压缩包；
@@ -142,9 +151,7 @@ public final class Installer {
                                 return FileVisitResult.CONTINUE;
                             }
                             String n = file.getFileName().toString().toLowerCase(Locale.ROOT);
-                            boolean extMatch = n.endsWith(".zip") || n.endsWith(".tar.gz")
-                                    || n.endsWith(".tgz") || n.endsWith(".tar");
-                            if (extMatch && isArchiveMagic(file)) {
+                            if (hasArchiveExtension(n) && isArchiveMagic(file)) {
                                 out.add(file.toAbsolutePath().normalize());
                             }
                             return FileVisitResult.CONTINUE;
@@ -161,7 +168,18 @@ public final class Installer {
         return out;
     }
 
-    /** 扩展名 + 魔数双重校验（zip: PK 头；gzip: 1F 8B；tar: 257 偏移处 ustar）。 */
+    /** 按扩展名判断是否可能是支持的压缩包（最终还要通过魔数校验）。 */
+    private static boolean hasArchiveExtension(String n) {
+        return n.endsWith(".zip")
+                || n.endsWith(".tar")
+                || n.endsWith(".tar.gz") || n.endsWith(".tgz")
+                || n.endsWith(".tar.bz2") || n.endsWith(".tbz2")
+                || n.endsWith(".tar.xz") || n.endsWith(".txz")
+                || n.endsWith(".7z")
+                || n.endsWith(".rar");
+    }
+
+    /** 扩展名 + 魔数双重校验（zip/gzip/bzip2/xz/7z/rar 头；tar: 257 偏移处 ustar）。 */
     static boolean isArchiveMagic(Path file) {
         InputStream in = null;
         try {
@@ -176,7 +194,23 @@ public final class Installer {
                 return true;
             }
             if (total >= 2 && (buf[0] & 0xff) == 0x1f && (buf[1] & 0xff) == 0x8b) {
-                return true;
+                return true; // gzip
+            }
+            if (total >= 3 && buf[0] == 'B' && buf[1] == 'Z' && buf[2] == 'h') {
+                return true; // bzip2
+            }
+            if (total >= 6 && (buf[0] & 0xff) == 0xfd && buf[1] == '7' && buf[2] == 'z'
+                    && buf[3] == 'X' && buf[4] == 'Z' && buf[5] == 0) {
+                return true; // xz
+            }
+            if (total >= 6 && buf[0] == '7' && buf[1] == 'z' && (buf[2] & 0xff) == 0xbc
+                    && (buf[3] & 0xff) == 0xaf && buf[4] == 0x27 && buf[5] == 0x1c) {
+                return true; // 7z
+            }
+            if (total >= 7 && buf[0] == 'R' && buf[1] == 'a' && buf[2] == 'r'
+                    && buf[3] == '!' && buf[4] == 0x1a && buf[5] == 0x07
+                    && (buf[6] == 0 || buf[6] == 1)) {
+                return true; // rar4 / rar5
             }
             return total >= 262 && buf[257] == 'u' && buf[258] == 's' && buf[259] == 't' && buf[260] == 'a' && buf[261] == 'r';
         } catch (Exception e) {
@@ -262,24 +296,30 @@ public final class Installer {
 
     private static List<String> listEntryNames(Path archive, int cap, String zipEncoding) {
         String n = archive.getFileName().toString().toLowerCase(Locale.ROOT);
-        try (InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16)) {
-            List<String> out = new ArrayList<String>();
-            ArchiveInputStream<? extends ArchiveEntry> tin;
-            if (n.endsWith(".zip")) {
-                // 流式读取：不解析 central directory，规避 JDK 对中文打包软件 zip 的严格校验失败
-                tin = newZipStream(raw, zipEncoding);
-            } else {
-                InputStream wrapped = n.endsWith(".tar") ? raw : new GzipCompressorInputStream(raw);
-                tin = new TarArchiveInputStream(wrapped);
+        try {
+            if (n.endsWith(".7z")) {
+                return list7zEntryNames(archive, cap);
             }
-            try {
-                ArchiveEntry e;
-                while ((e = tin.getNextEntry()) != null && out.size() < cap) {
-                    // 后续只做标记匹配：统一小写并把反斜杠规范成 '/'
-                    out.add(e.getName().toLowerCase(Locale.ROOT).replace('\\', '/'));
+            if (n.endsWith(".rar")) {
+                return listRarEntryNames(archive, cap);
+            }
+            List<String> out = new ArrayList<String>();
+            try (InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16)) {
+                ArchiveInputStream<? extends ArchiveEntry> tin;
+                if (n.endsWith(".zip")) {
+                    // 流式读取：不解析 central directory，规避 JDK 对中文打包软件 zip 的严格校验失败
+                    tin = newZipStream(raw, zipEncoding);
+                } else {
+                    tin = new TarArchiveInputStream(tarStream(raw, n));
                 }
-            } finally {
-                tin.close();
+                try {
+                    ArchiveEntry e;
+                    while ((e = tin.getNextEntry()) != null && out.size() < cap) {
+                        out.add(normalizeEntryName(e.getName()));
+                    }
+                } finally {
+                    tin.close();
+                }
             }
             return out;
         } catch (Exception e) {
@@ -288,10 +328,57 @@ public final class Installer {
         }
     }
 
+    private static List<String> list7zEntryNames(Path archive, int cap) throws IOException {
+        List<String> out = new ArrayList<String>();
+        try (SevenZFile sz = SevenZFile.builder().setPath(archive).get()) {
+            SevenZArchiveEntry e;
+            while ((e = sz.getNextEntry()) != null && out.size() < cap) {
+                if (e.getName() != null) {
+                    out.add(normalizeEntryName(e.getName()));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static List<String> listRarEntryNames(Path archive, int cap) throws IOException, RarException {
+        List<String> out = new ArrayList<String>();
+        try (Archive ar = new Archive(archive.toFile())) {
+            for (FileHeader fh : ar.getFileHeaders()) {
+                if (out.size() >= cap) {
+                    break;
+                }
+                if (fh.getFileName() != null) {
+                    out.add(normalizeEntryName(fh.getFileName()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 后续只做标记匹配：统一小写并把反斜杠规范成 '/'。 */
+    private static String normalizeEntryName(String name) {
+        return name.toLowerCase(Locale.ROOT).replace('\\', '/');
+    }
+
     private static ZipArchiveInputStream newZipStream(InputStream raw, String encoding) {
         // useUnicodeExtraFields=true：EFS/Unicode extra field 的条目按 UTF-8，其余按给定编码
         // allowStoredEntriesWithDataDescriptor=true：容忍 data descriptor 形式的 stored 条目
         return new ZipArchiveInputStream(raw, encoding, true, true);
+    }
+
+    /** 按扩展名给 tar 流套上对应的解压器（plain tar 原样返回）。 */
+    private static InputStream tarStream(InputStream raw, String n) throws IOException {
+        if (n.endsWith(".tar.gz") || n.endsWith(".tgz")) {
+            return new GzipCompressorInputStream(raw);
+        }
+        if (n.endsWith(".tar.bz2") || n.endsWith(".tbz2")) {
+            return new BZip2CompressorInputStream(raw);
+        }
+        if (n.endsWith(".tar.xz") || n.endsWith(".txz")) {
+            return new XZCompressorInputStream(raw);
+        }
+        return raw;
     }
 
     // ---------------------------------------------------------------- 解压
@@ -299,13 +386,20 @@ public final class Installer {
     static int extract(Path archive, Path staging, String zipEncoding) throws IOException {
         Files.createDirectories(staging);
         String n = archive.getFileName().toString().toLowerCase(Locale.ROOT);
-        int files;
         if (n.endsWith(".zip")) {
-            files = extractZip(archive, staging, zipEncoding);
-        } else {
-            files = extractTar(archive, staging, !n.endsWith(".tar"));
+            return extractZip(archive, staging, zipEncoding);
         }
-        return files;
+        if (n.endsWith(".7z")) {
+            return extract7z(archive, staging);
+        }
+        if (n.endsWith(".rar")) {
+            try {
+                return extractRar(archive, staging);
+            } catch (RarException e) {
+                throw new IOException(e.getMessage(), e);
+            }
+        }
+        return extractTar(archive, staging, n);
     }
 
     /** 防 zip slip：条目路径规范化后必须仍位于暂存目录内。 */
@@ -318,12 +412,18 @@ public final class Installer {
         return p;
     }
 
+    private static void copy(InputStream in, OutputStream out, byte[] buf) throws IOException {
+        int r;
+        while ((r = in.read(buf)) > 0) {
+            out.write(buf, 0, r);
+        }
+    }
+
     private static int extractZip(Path archive, Path staging, String zipEncoding) throws IOException {
-        InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16);
-        ZipArchiveInputStream zin = newZipStream(raw, zipEncoding);
-        try {
-            int files = 0;
-            byte[] buf = new byte[65536];
+        int files = 0;
+        byte[] buf = new byte[65536];
+        try (InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16);
+             ZipArchiveInputStream zin = newZipStream(raw, zipEncoding)) {
             ZipArchiveEntry e;
             while ((e = zin.getNextEntry()) != null) {
                 if (e.isDirectory()) {
@@ -337,30 +437,80 @@ public final class Installer {
                 if (t.getParent() != null) {
                     Files.createDirectories(t.getParent());
                 }
-                OutputStream out = Files.newOutputStream(t);
-                try {
-                    int r;
-                    while ((r = zin.read(buf)) > 0) {
-                        out.write(buf, 0, r);
-                    }
-                } finally {
-                    out.close();
+                try (OutputStream out = Files.newOutputStream(t)) {
+                    copy(zin, out, buf);
                 }
                 files++;
             }
-            return files;
-        } finally {
-            zin.close();
         }
+        return files;
     }
 
-    private static int extractTar(Path archive, Path staging, boolean gzip) throws IOException {
-        InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16);
-        InputStream wrapped = gzip ? new GzipCompressorInputStream(raw) : raw;
-        TarArchiveInputStream tin = new TarArchiveInputStream(wrapped);
-        try {
-            int files = 0;
-            byte[] buf = new byte[65536];
+    private static int extract7z(Path archive, Path staging) throws IOException {
+        int files = 0;
+        byte[] buf = new byte[65536];
+        try (SevenZFile sz = SevenZFile.builder().setPath(archive).get()) {
+            SevenZArchiveEntry e;
+            while ((e = sz.getNextEntry()) != null) {
+                if (e.isDirectory() || e.isAntiItem() || e.getName() == null) {
+                    continue;
+                }
+                Path t = safeTarget(staging, e.getName());
+                if (t == null) {
+                    Log.warn(Messages.get("install.tarSlip", e.getName()));
+                    continue;
+                }
+                if (t.getParent() != null) {
+                    Files.createDirectories(t.getParent());
+                }
+                if (e.hasStream()) {
+                    try (InputStream in = sz.getInputStream(e); OutputStream out = Files.newOutputStream(t)) {
+                        copy(in, out, buf);
+                    }
+                } else {
+                    Files.newOutputStream(t).close(); // 空文件
+                }
+                files++;
+            }
+        }
+        return files;
+    }
+
+    private static int extractRar(Path archive, Path staging) throws IOException, RarException {
+        int files = 0;
+        try (Archive ar = new Archive(archive.toFile())) {
+            // 顺序读取，兼容 solid 压缩的 RAR
+            FileHeader fh;
+            while ((fh = ar.nextFileHeader()) != null) {
+                if (fh.isDirectory()) {
+                    continue;
+                }
+                String name = fh.getFileName();
+                if (name == null) {
+                    continue;
+                }
+                Path t = safeTarget(staging, name);
+                if (t == null) {
+                    Log.warn(Messages.get("install.tarSlip", name));
+                    continue;
+                }
+                if (t.getParent() != null) {
+                    Files.createDirectories(t.getParent());
+                }
+                try (OutputStream out = Files.newOutputStream(t)) {
+                    ar.extractFile(fh, out);
+                }
+                files++;
+            }
+        }
+        return files;
+    }
+
+    private static int extractTar(Path archive, Path staging, String n) throws IOException {
+        int files = 0;
+        byte[] buf = new byte[65536];
+        try (InputStream raw = new BufferedInputStream(Files.newInputStream(archive), 1 << 16);
+             TarArchiveInputStream tin = new TarArchiveInputStream(tarStream(raw, n))) {
             TarArchiveEntry e;
             while ((e = tin.getNextEntry()) != null) {
                 if (e.isDirectory() || e.isSymbolicLink() || e.isLink()) {
@@ -377,21 +527,13 @@ public final class Installer {
                 if (t.getParent() != null) {
                     Files.createDirectories(t.getParent());
                 }
-                OutputStream out = Files.newOutputStream(t);
-                try {
-                    int r;
-                    while ((r = tin.read(buf)) > 0) {
-                        out.write(buf, 0, r);
-                    }
-                } finally {
-                    out.close();
+                try (OutputStream out = Files.newOutputStream(t)) {
+                    copy(tin, out, buf);
                 }
                 files++;
             }
-            return files;
-        } finally {
-            tin.close();
         }
+        return files;
     }
 
     // ---------------------------------------------------------------- 根定位与安装
