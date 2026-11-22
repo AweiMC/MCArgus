@@ -1,0 +1,6 @@
+# Keep shell scripts LF so they run on Linux/macOS after checkout
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Binary artifacts
+*.jar binary
